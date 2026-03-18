@@ -1,6 +1,21 @@
 import os
+import sys
 import hashlib
 from mutagen import File
+
+# ANSI colors
+COLOR_RESET = '\033[0m'
+COLOR_BOLD = '\033[1m'
+COLOR_CYAN = '\033[96m'
+COLOR_GREEN = '\033[92m'
+COLOR_YELLOW = '\033[93m'
+COLOR_RED = '\033[91m'
+COLOR_MAGENTA = '\033[95m'
+
+
+def color(text, ansi):
+    return f"{ansi}{text}{COLOR_RESET}"
+
 
 def get_audio_metadata(file_path):
     """Extracts artist, title, and bitrate from an audio file."""
@@ -29,20 +44,34 @@ def find_duplicates(root_dir):
     songs_registry = {}  # Key: artist|title, Value: list of file info
     duplicates = []
 
-    print(f"--- Scanning directory: {root_dir} ---")
+    print(color("====================================================", COLOR_MAGENTA))
+    print(color("  _____  _   _  _____  _   _  _____ _   _ ", COLOR_CYAN))
+    print(color(" |  __ \| \ | |/ ____|| \ | |/ ____| \ | |", COLOR_CYAN))
+    print(color(" | |  | |  \| | |  __ |  \| | |  __|  \| |", COLOR_CYAN))
+    print(color(" | |  | | . ` | | |_ || . ` | | |_ | . ` |", COLOR_CYAN))
+    print(color(" | |__| | |\  | |__| || |\  | |__| | |\  |", COLOR_CYAN))
+    print(color(" |_____/|_| \_|\_____||_| \_|\_____|_| \_|", COLOR_CYAN))
+    print(color("====================================================", COLOR_MAGENTA))
+    print(color(f"Scanning: {root_dir}", COLOR_GREEN), flush=True)
+    files_scanned = 0
 
     for dirpath, _, filenames in os.walk(root_dir):
         for filename in filenames:
             if filename.lower().endswith(('.mp3', '.flac', '.m4a', '.wav')):
                 full_path = os.path.join(dirpath, filename)
+                files_scanned += 1
+                if files_scanned % 50 == 0:
+                    print(color(f" Scanned {files_scanned} audio files...", COLOR_YELLOW), flush=True)
                 meta = get_audio_metadata(full_path)
-                
+
                 if meta and meta['key'] != "unknown artist|unknown title":
                     key = meta['key']
                     if key in songs_registry:
                         songs_registry[key].append(meta)
                     else:
                         songs_registry[key] = [meta]
+
+    print(color(f"Finished scanning {files_scanned} audio files.", COLOR_GREEN), flush=True)
 
     # Process registry for duplicates
     for key, files in songs_registry.items():
@@ -124,13 +153,13 @@ def report_duplicates(duplicates, log_csv=None):
         print(f"\nCSV log written to {log_csv}")
 
     stats = compute_duplicate_stats(duplicates)
-    print('\n=== Duplicate Stats ===')
-    print(f"Total duplicate groups: {stats['total_duplicates']}")
-    print(f"Total duplicate files: {stats['total_duplicate_files']}")
+    print('\n=== Duplicate Stats ===', flush=True)
+    print(f"Total duplicate groups: {stats['total_duplicates']}", flush=True)
+    print(f"Total duplicate files: {stats['total_duplicate_files']}", flush=True)
     size_mb = stats['total_duplicate_size'] / (1024*1024)
-    print(f"Total duplicate space: {size_mb:.2f} MB")
-    print(f"Artists with duplicates: {stats['artists_with_duplicates']}")
-    print(f"Most common duplicate artist: {stats['most_common_artist'] if stats['most_common_artist'] else 'N/A'}")
+    print(f"Total duplicate space: {size_mb:.2f} MB", flush=True)
+    print(f"Artists with duplicates: {stats['artists_with_duplicates']}", flush=True)
+    print(f"Most common duplicate artist: {stats['most_common_artist'] if stats['most_common_artist'] else 'N/A'}", flush=True)
 
 
 if __name__ == "__main__":
