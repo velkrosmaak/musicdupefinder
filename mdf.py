@@ -1,6 +1,12 @@
 import os
 import sys
 import hashlib
+import concurrent.futures
+import argparse
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 from mutagen import File
 
 # ANSI colors
@@ -18,7 +24,7 @@ def color(text, ansi):
 
 
 def get_audio_metadata(file_path):
-    """Extracts artist, title, and bitrate from an audio file."""
+    """Extracts artist, title, album, and bitrate from an audio file."""
     try:
         audio = File(file_path)
         if audio is None:
@@ -27,13 +33,16 @@ def get_audio_metadata(file_path):
         # Get bitrate (standardized to bps)
         bitrate = getattr(audio.info, 'bitrate', 0)
         
-        # Extract tags (Artist and Title)
+        # Extract tags (Artist, Title, Album)
         # Mutagen keys vary by format, so we use a generic approach
         artist = str(audio.get('TPE1', audio.get('artist', ['Unknown Artist'])[0]))
         title = str(audio.get('TIT2', audio.get('title', ['Unknown Title'])[0]))
+        album = str(audio.get('TALB', audio.get('album', ['Unknown Album'])[0]))
         
         return {
             'key': f"{artist.lower()}|{title.lower()}",
+            'artist': artist,
+            'album': album,
             'bitrate': bitrate,
             'path': file_path
         }
@@ -53,25 +62,51 @@ def find_duplicates(root_dir):
     print(color(" |_____/|_| \_|\_____||_| \_|\_____|_| \_|", COLOR_CYAN))
     print(color("====================================================", COLOR_MAGENTA))
     print(color(f"Scanning: {root_dir}", COLOR_GREEN), flush=True)
-    files_scanned = 0
 
+    audio_files = []
     for dirpath, _, filenames in os.walk(root_dir):
         for filename in filenames:
             if filename.lower().endswith(('.mp3', '.flac', '.m4a', '.wav')):
-                full_path = os.path.join(dirpath, filename)
-                files_scanned += 1
-                if files_scanned % 50 == 0:
-                    print(color(f" Scanned {files_scanned} audio files...", COLOR_YELLOW), flush=True)
-                meta = get_audio_metadata(full_path)
+                audio_files.append(os.path.join(dirpath, filename))
 
-                if meta and meta['key'] != "unknown artist|unknown title":
-                    key = meta['key']
-                    if key in songs_registry:
-                        songs_registry[key].append(meta)
-                    else:
-                        songs_registry[key] = [meta]
+    total_files = len(audio_files)
+    print(color(f"Found {total_files} audio files. Extracting metadata...", COLOR_CYAN), flush=True)
 
-    print(color(f"Finished scanning {files_scanned} audio files.", COLOR_GREEN), flush=True)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_to_path = {executor.submit(get_audio_metadata, f): f for f in audio_files}
+        
+        pbar = None
+        if tqdm:
+            pbar = tqdm(total=total_files, unit="file", desc="Scanning", ncols=100)
+
+        processed = 0
+        for future in concurrent.futures.as_completed(future_to_path):
+            processed += 1
+            
+            meta = future.result()
+            
+            if pbar:
+                if meta:
+                    pbar.set_postfix(artist=meta['artist'][:20], album=meta['album'][:20], refresh=False)
+                pbar.update(1)
+            else:
+                # Fallback progress output if tqdm is missing
+                current = f"{meta['artist']} - {meta['album']}" if meta else "..."
+                print(color(f"\rScanned {processed}/{total_files}: {current[:50]}", COLOR_YELLOW).ljust(90), end="", flush=True)
+
+            if meta and meta['key'] != "unknown artist|unknown title":
+                key = meta['key']
+                if key in songs_registry:
+                    songs_registry[key].append(meta)
+                else:
+                    songs_registry[key] = [meta]
+        
+        if pbar:
+            pbar.close()
+        else:
+            print()  # Ensure newline after carriage return output
+
+    print(color(f"Finished scanning {total_files} audio files.", COLOR_GREEN), flush=True)
 
     # Process registry for duplicates
     for key, files in songs_registry.items():
@@ -119,21 +154,20 @@ def compute_duplicate_stats(duplicates):
 
 
 def write_csv_log(duplicates, output_path):
-    header = ['group', 'quality', 'bitrate_kbps', 'path']
+    header = ['group', 'bitrate_kbps', 'path']
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
         if not duplicates:
-            writer.writerow(['No duplicates found', '', '', ''])
+            writer.writerow(['No duplicates found', '', ''])
             return
 
         for group in duplicates:
             group_text = group[0]['key'].replace('|', ' - ').title()
-            for i, track in enumerate(group):
-                quality = 'HIGHER QUALITY' if i == 0 else 'LOWER QUALITY'
+            for track in group:
                 bitrate = track['bitrate'] // 1000 if track['bitrate'] else 'Unknown'
-                writer.writerow([group_text, quality, bitrate, track['path']])
+                writer.writerow([group_text, bitrate, track['path']])
 
 
 def report_duplicates(duplicates, log_csv=None):
@@ -143,10 +177,9 @@ def report_duplicates(duplicates, log_csv=None):
     else:
         for group in duplicates:
             print(f"\nDuplicate found for: {group[0]['key'].replace('|', ' - ').title()}")
-            for i, f in enumerate(group):
-                quality_marker = "[HIGHER QUALITY]" if i == 0 else "[LOWER QUALITY]"
+            for f in group:
                 bitrate_kbps = f['bitrate'] // 1000 if f['bitrate'] else "Unknown"
-                print(f"  {quality_marker} {bitrate_kbps}kbps: {f['path']}")
+                print(f"  {bitrate_kbps}kbps: {f['path']}")
 
     if log_csv:
         write_csv_log(duplicates, log_csv)
@@ -163,8 +196,12 @@ def report_duplicates(duplicates, log_csv=None):
 
 
 if __name__ == "__main__":
-    # Change this to your music directory path as needed
-    target_folder = '/Volumes/Media/music/Tipper'
-    log_file = f"duplicates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    dup_list = find_duplicates(target_folder)
+    parser = argparse.ArgumentParser(description="Find duplicate audio files by tags.")
+    parser.add_argument("target_folder", help="Root directory to scan")
+    parser.add_argument("--log", help="Output CSV log file path")
+    args = parser.parse_args()
+
+    log_file = args.log if args.log else f"duplicates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    dup_list = find_duplicates(args.target_folder)
     report_duplicates(dup_list, log_csv=log_file)
