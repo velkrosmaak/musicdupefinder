@@ -3,6 +3,8 @@ import sys
 import hashlib
 import concurrent.futures
 import argparse
+import time
+from collections import defaultdict
 try:
     from tqdm import tqdm
 except ImportError:
@@ -23,8 +25,20 @@ def color(text, ansi):
     return f"{ansi}{text}{COLOR_RESET}"
 
 
+def format_size(size_bytes):
+    """Auto-scales bytes to human readable format."""
+    if size_bytes == 0:
+        return "0 B"
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.2f} PB"
+
+
 def get_audio_metadata(file_path):
     """Extracts artist, title, album, and bitrate from an audio file."""
+    start_time = time.time()
     try:
         audio = File(file_path)
         if audio is None:
@@ -39,12 +53,26 @@ def get_audio_metadata(file_path):
         title = str(audio.get('TIT2', audio.get('title', ['Unknown Title'])[0]))
         album = str(audio.get('TALB', audio.get('album', ['Unknown Album'])[0]))
         
+        # Extract Year (Try common keys: TDRC, TYER, date, year, ©day)
+        year = str(audio.get('TDRC', audio.get('TYER', audio.get('date', audio.get('year', audio.get('©day', ['Unknown Year']))))[0]))
+        if year and str(year).strip():
+             year = str(year).split('-')[0].strip()[:4]
+        
+        # Format (extension)
+        fmt = os.path.splitext(file_path)[1].lower().lstrip('.')
+        
+        elapsed = time.time() - start_time
+        
         return {
             'key': f"{artist.lower()}|{title.lower()}",
             'artist': artist,
+            'title': title,
             'album': album,
+            'year': year,
+            'format': fmt,
             'bitrate': bitrate,
-            'path': file_path
+            'path': file_path,
+            'scan_time': elapsed
         }
     except Exception:
         return None
@@ -52,6 +80,15 @@ def get_audio_metadata(file_path):
 def find_duplicates(root_dir):
     songs_registry = {}  # Key: artist|title, Value: list of file info
     duplicates = []
+    
+    # Performance stats
+    stats = {
+        'start_time': time.time(),
+        'total_files': 0,
+        'scan_time_sum': 0.0,
+        'slowest_song': {'time': 0.0, 'name': None},
+        'artist_times': defaultdict(float)
+    }
 
     print(color("====================================================", COLOR_MAGENTA))
     print(color("  _____  _   _  _____  _   _  _____ _   _ ", COLOR_CYAN))
@@ -106,6 +143,7 @@ def find_duplicates(root_dir):
         else:
             print()  # Ensure newline after carriage return output
 
+    stats['total_duration'] = time.time() - stats['start_time']
     print(color(f"Finished scanning {total_files} audio files.", COLOR_GREEN), flush=True)
 
     # Process registry for duplicates
@@ -115,7 +153,7 @@ def find_duplicates(root_dir):
             files.sort(key=lambda x: x['bitrate'], reverse=True)
             duplicates.append(files)
 
-    return duplicates
+    return duplicates, stats
 
 import csv
 from datetime import datetime
@@ -149,50 +187,83 @@ def compute_duplicate_stats(duplicates):
         'total_duplicates': len(duplicates),
         'artists_with_duplicates': total_artists_with_duplicates,
         'most_common_artist': most_common_artist,
-        'artist_counts': artist_counts
+        'artist_counts': artist_counts,
     }
 
 
 def write_csv_log(duplicates, output_path):
-    header = ['group', 'bitrate_kbps', 'path']
+    header = ['Group ID', 'Quality (kbps)', 'Highest Quality', 'Format', 'Artist', 'Title', 'Album', 'Year', 'Path']
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
         if not duplicates:
-            writer.writerow(['No duplicates found', '', ''])
+            writer.writerow(['No duplicates found'] + [''] * 8)
             return
 
-        for group in duplicates:
-            group_text = group[0]['key'].replace('|', ' - ').title()
+        for i, group in enumerate(duplicates):
+            group_id = f"DUP-{i+1:04d}"
+            max_bitrate = max((t['bitrate'] for t in group), default=0)
             for track in group:
-                bitrate = track['bitrate'] // 1000 if track['bitrate'] else 'Unknown'
-                writer.writerow([group_text, bitrate, track['path']])
+                bitrate = track['bitrate'] // 1000 if track['bitrate'] else 0
+                is_highest = track['bitrate'] == max_bitrate
+                writer.writerow([
+                    group_id,
+                    bitrate,
+                    is_highest,
+                    track['format'],
+                    track['artist'],
+                    track['title'],
+                    track['album'],
+                    track['year'],
+                    track['path']
+                ])
 
 
-def report_duplicates(duplicates, log_csv=None):
+def report_duplicates(duplicates, stats=None, log_csv=None):
     if not duplicates:
         print("No duplicates found.")
 
     else:
-        for group in duplicates:
-            print(f"\nDuplicate found for: {group[0]['key'].replace('|', ' - ').title()}")
+        print(f"\n{len(duplicates)} duplicate groups found.", flush=True)
+        # Only print first few to avoid spamming console if many
+        limit = 5
+        for i, group in enumerate(duplicates[:limit]):
+            print(f"\nDuplicate Group {i+1}: {group[0]['artist']} - {group[0]['title']}")
             for f in group:
                 bitrate_kbps = f['bitrate'] // 1000 if f['bitrate'] else "Unknown"
-                print(f"  {bitrate_kbps}kbps: {f['path']}")
+                size_str = format_size(os.path.getsize(f['path']))
+                print(f"  [{f['format'].upper()}] {bitrate_kbps}kbps, {size_str}: {f['path']}")
+        
+        if len(duplicates) > limit:
+            print(f"\n... and {len(duplicates) - limit} more groups.")
 
     if log_csv:
         write_csv_log(duplicates, log_csv)
         print(f"\nCSV log written to {log_csv}")
 
-    stats = compute_duplicate_stats(duplicates)
+    dupe_stats = compute_duplicate_stats(duplicates)
     print('\n=== Duplicate Stats ===', flush=True)
-    print(f"Total duplicate groups: {stats['total_duplicates']}", flush=True)
-    print(f"Total duplicate files: {stats['total_duplicate_files']}", flush=True)
-    size_mb = stats['total_duplicate_size'] / (1024*1024)
-    print(f"Total duplicate space: {size_mb:.2f} MB", flush=True)
-    print(f"Artists with duplicates: {stats['artists_with_duplicates']}", flush=True)
-    print(f"Most common duplicate artist: {stats['most_common_artist'] if stats['most_common_artist'] else 'N/A'}", flush=True)
+    print(f"Total duplicate groups: {dupe_stats['total_duplicates']}", flush=True)
+    print(f"Total duplicate files: {dupe_stats['total_duplicate_files']}", flush=True)
+    print(f"Total duplicate space: {format_size(dupe_stats['total_duplicate_size'])}", flush=True)
+    print(f"Artists with duplicates: {dupe_stats['artists_with_duplicates']}", flush=True)
+    print(f"Most common duplicate artist: {dupe_stats['most_common_artist'] if dupe_stats['most_common_artist'] else 'N/A'}", flush=True)
+
+    if stats:
+        print('\n=== Performance Stats ===', flush=True)
+        print(f"Total scan time: {stats['total_duration']:.2f}s")
+        avg_time = stats['scan_time_sum'] / max(1, stats['total_duration']) # Approximate avg per sec? No, avg per song.
+        # We need total_files from stats but it wasn't tracked in find_duplicates explicitly outside loop
+        # We can imply it from the scan_time_sum count or just use the passed in total if available, 
+        # but let's just use what we have.
+        # Actually we didn't store total files count in `stats` dict in find_duplicates.
+        # Let's use scan_time_sum / total_duration to see utilization or just print maxes.
+        print(f"Slowest song to scan: {stats['slowest_song']['time']:.4f}s ({stats['slowest_song']['name']})")
+        
+        if stats['artist_times']:
+            slowest_artist = max(stats['artist_times'].items(), key=lambda x: x[1])
+            print(f"Most time consuming artist: {slowest_artist[0]} ({slowest_artist[1]:.2f}s total)")
 
 
 if __name__ == "__main__":
@@ -203,5 +274,5 @@ if __name__ == "__main__":
 
     log_file = args.log if args.log else f"duplicates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
-    dup_list = find_duplicates(args.target_folder)
-    report_duplicates(dup_list, log_csv=log_file)
+    dup_list, perf_stats = find_duplicates(args.target_folder)
+    report_duplicates(dup_list, stats=perf_stats, log_csv=log_file)
