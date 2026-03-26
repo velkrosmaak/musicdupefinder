@@ -61,6 +61,9 @@ def get_audio_metadata(file_path):
         # Format (extension)
         fmt = os.path.splitext(file_path)[1].lower().lstrip('.')
         
+        # File size for real-time stats
+        file_size = os.path.getsize(file_path)
+
         elapsed = time.time() - start_time
         
         return {
@@ -72,12 +75,13 @@ def get_audio_metadata(file_path):
             'format': fmt,
             'bitrate': bitrate,
             'path': file_path,
-            'scan_time': elapsed
+            'scan_time': elapsed,
+            'size': file_size
         }
     except Exception:
         return None
 
-def find_duplicates(root_dir):
+def find_duplicates(root_dir, verbose=False):
     songs_registry = {}  # Key: artist|title, Value: list of file info
     duplicates = []
     
@@ -89,6 +93,11 @@ def find_duplicates(root_dir):
         'slowest_song': {'time': 0.0, 'name': None},
         'artist_times': defaultdict(float)
     }
+
+    # Running duplicate stats for verbose mode
+    dupe_groups = 0
+    dupe_files = 0
+    dupe_bytes = 0
 
     print(color("====================================================", COLOR_MAGENTA))
     print(color("  _____  _   _  _____  _   _  _____ _   _ ", COLOR_CYAN))
@@ -131,17 +140,43 @@ def find_duplicates(root_dir):
                 current = f"{meta['artist']} - {meta['album']}" if meta else "..."
                 print(color(f"\rScanned {processed}/{total_files}: {current[:50]}", COLOR_YELLOW).ljust(90), end="", flush=True)
 
+            if meta:
+                # Update performance stats
+                stats['scan_time_sum'] += meta['scan_time']
+                stats['artist_times'][meta['artist']] += meta['scan_time']
+                if meta['scan_time'] > stats['slowest_song']['time']:
+                    stats['slowest_song'] = {'time': meta['scan_time'], 'name': f"{meta['artist']} - {meta['title']}"}
+
             if meta and meta['key'] != "unknown artist|unknown title":
                 key = meta['key']
                 if key in songs_registry:
+                    group = songs_registry[key]
+                    if len(group) == 1:
+                        dupe_groups += 1
+                        dupe_files += 2
+                        dupe_bytes += group[0]['size'] + meta['size']
+                    else:
+                        dupe_files += 1
+                        dupe_bytes += meta['size']
                     songs_registry[key].append(meta)
                 else:
                     songs_registry[key] = [meta]
+            
+            if verbose:
+                # Print stats on a line below the progress bar using ANSI escape codes
+                # \n moves down, \033[K clears the line, \033[1A moves back up
+                stats_line = f"Real-time Dupes: {dupe_groups} groups | {dupe_files} files | {format_size(dupe_bytes)}"
+                sys.stdout.write(f"\n\033[K{color(stats_line, COLOR_CYAN)}\033[1A\r")
+                sys.stdout.flush()
         
         if pbar:
             pbar.close()
         else:
             print()  # Ensure newline after carriage return output
+            
+        if verbose:
+            # Ensure we move the cursor past the real-time stats line at the end
+            print("\n")
 
     stats['total_duration'] = time.time() - stats['start_time']
     print(color(f"Finished scanning {total_files} audio files.", COLOR_GREEN), flush=True)
@@ -321,9 +356,10 @@ if __name__ == "__main__":
     parser.add_argument("target_folder", help="Root directory to scan")
     parser.add_argument("--log", help="Output CSV log file path")
     parser.add_argument("--do-deletes", action="store_true", help="Actually delete the lower-quality duplicate files")
+    parser.add_argument("--verbose", action="store_true", help="Show real-time duplicate statistics during scan")
     args = parser.parse_args()
 
     log_file = args.log if args.log else f"duplicates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
-    dup_list, perf_stats = find_duplicates(args.target_folder)
+    dup_list, perf_stats = find_duplicates(args.target_folder, verbose=args.verbose)
     report_duplicates(dup_list, stats=perf_stats, log_csv=log_file, do_deletes=args.do_deletes)
