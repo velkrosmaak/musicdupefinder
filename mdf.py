@@ -192,14 +192,17 @@ def compute_duplicate_stats(duplicates):
 
 
 def write_csv_log(duplicates, output_path):
-    header = ['Group ID', 'Quality (kbps)', 'Highest Quality', 'Format', 'Artist', 'Title', 'Album', 'Year', 'Path']
+    header = ['Group ID', 'Quality (kbps)', 'Highest Quality', 'Will Keep', 'Format', 'Artist', 'Title', 'Album', 'Year', 'Path']
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
 
         if not duplicates:
-            writer.writerow(['No duplicates found'] + [''] * 8)
+            writer.writerow(['No duplicates found'] + [''] * 9)
             return
+
+        # Determine keeps globally to maintain folder integrity
+        keeps, _ = determine_actions(duplicates)
 
         for i, group in enumerate(duplicates):
             group_id = f"DUP-{i+1:04d}"
@@ -207,10 +210,12 @@ def write_csv_log(duplicates, output_path):
             for track in group:
                 bitrate = track['bitrate'] // 1000 if track['bitrate'] else 0
                 is_highest = track['bitrate'] == max_bitrate
+                will_keep = track['path'] in keeps
                 writer.writerow([
                     group_id,
                     bitrate,
                     is_highest,
+                    will_keep,
                     track['format'],
                     track['artist'],
                     track['title'],
@@ -220,23 +225,68 @@ def write_csv_log(duplicates, output_path):
                 ])
 
 
-def report_duplicates(duplicates, stats=None, log_csv=None):
+def determine_actions(duplicates):
+    """
+    Determines which files to keep vs remove based on:
+    1. Highest Quality (Bitrate)
+    2. Folder Integrity (Keep tracks in the same directory if quality is tied)
+    """
+    keeps = set()
+    removes = set()
+    # Tracks how many 'keep' decisions have been made for a specific directory
+    directory_scores = defaultdict(int)
+
+    for group in duplicates:
+        max_bitrate = max((t['bitrate'] for t in group), default=0)
+        candidates = [t for t in group if t['bitrate'] == max_bitrate]
+        
+        # Tie-breaker: If multiple high-quality versions, pick the one 
+        # whose directory we are already favoring for other tracks.
+        # Stability note: If scores are tied (e.g. 0), the first one in the list is kept.
+        candidates.sort(key=lambda x: directory_scores[os.path.dirname(x['path'])], reverse=True)
+        
+        best_track = candidates[0]
+        keeps.add(best_track['path'])
+        directory_scores[os.path.dirname(best_track['path'])] += 1
+        
+        for track in group:
+            if track['path'] != best_track['path']:
+                removes.add(track['path'])
+                
+    return keeps, removes
+
+
+def report_duplicates(duplicates, stats=None, log_csv=None, do_deletes=False):
     if not duplicates:
         print("No duplicates found.")
-
-    else:
-        print(f"\n{len(duplicates)} duplicate groups found.", flush=True)
-        # Only print first few to avoid spamming console if many
-        limit = 5
-        for i, group in enumerate(duplicates[:limit]):
-            print(f"\nDuplicate Group {i+1}: {group[0]['artist']} - {group[0]['title']}")
-            for f in group:
-                bitrate_kbps = f['bitrate'] // 1000 if f['bitrate'] else "Unknown"
-                size_str = format_size(os.path.getsize(f['path']))
-                print(f"  [{f['format'].upper()}] {bitrate_kbps}kbps, {size_str}: {f['path']}")
+        return
         
-        if len(duplicates) > limit:
-            print(f"\n... and {len(duplicates) - limit} more groups.")
+    keeps, removes = determine_actions(duplicates)
+
+    print(f"\n{len(duplicates)} duplicate groups found.", flush=True)
+    # Only print first few to avoid spamming console if many
+    limit = 5
+    for i, group in enumerate(duplicates[:limit]):
+        print(f"\nDuplicate Group {i+1}: {group[0]['artist']} - {group[0]['title']}")
+        for f in group:
+            status = color("[KEEP]", COLOR_GREEN) if f['path'] in keeps else color("[DELETE]", COLOR_RED)
+            bitrate_kbps = f['bitrate'] // 1000 if f['bitrate'] else "Unknown"
+            size_str = format_size(os.path.getsize(f['path']))
+            print(f"  {status} [{f['format'].upper()}] {bitrate_kbps}kbps, {size_str}: {f['path']}")
+    
+    if len(duplicates) > limit:
+        print(f"\n... and {len(duplicates) - limit} more groups.")
+
+    if do_deletes:
+        print(color(f"\nDeleting {len(removes)} duplicate files...", COLOR_RED))
+        deleted_count = 0
+        for path in removes:
+            try:
+                os.remove(path)
+                deleted_count += 1
+            except Exception as e:
+                print(color(f"Error deleting {path}: {e}", COLOR_RED))
+        print(color(f"Successfully deleted {deleted_count} files.", COLOR_GREEN))
 
     if log_csv:
         write_csv_log(duplicates, log_csv)
@@ -270,9 +320,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Find duplicate audio files by tags.")
     parser.add_argument("target_folder", help="Root directory to scan")
     parser.add_argument("--log", help="Output CSV log file path")
+    parser.add_argument("--do-deletes", action="store_true", help="Actually delete the lower-quality duplicate files")
     args = parser.parse_args()
 
     log_file = args.log if args.log else f"duplicates_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
     dup_list, perf_stats = find_duplicates(args.target_folder)
-    report_duplicates(dup_list, stats=perf_stats, log_csv=log_file)
+    report_duplicates(dup_list, stats=perf_stats, log_csv=log_file, do_deletes=args.do_deletes)
