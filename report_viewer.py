@@ -1,13 +1,17 @@
 import pandas as pd
 from flask import Flask, render_template, jsonify, request
 import os
+import argparse
 
 app = Flask(__name__)
 
 # Configuration
-# IMPORTANT: Update this path to your actual CSV file location
+parser = argparse.ArgumentParser(description="Music Duplicate Finder Report Viewer")
+parser.add_argument("csv_file", nargs='?', help="Path to the CSV report file")
+args, _ = parser.parse_known_args()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILE_PATH = os.path.join(BASE_DIR, 'full_library_new_full.csv')
+CSV_FILE_PATH = args.csv_file if args.csv_file else os.path.join(BASE_DIR, 'full_library_new_full.csv')
 
 # Global DataFrame to hold the data, loaded once at startup
 df = pd.DataFrame()
