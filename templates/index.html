@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Duplicate Finder Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Music Duplicate Analysis Dashboard</h1>
+    </header>
+    <main>
+        <section id="summary-dashboard" class="dashboard-section">
+            <h2>Overall Summary</h2>
+            <div class="summary-cards">
+                <div class="card">
+                    <h3>Total Duplicate Tracks</h3>
+                    <p id="total-tracks"></p>
+                </div>
+                <div class="card">
+                    <h3>Total Duplicate Groups</h3>
+                    <p id="total-groups"></p>
+                </div>
+                <div class="card">
+                    <h3>Unique Artists Involved</h3>
+                    <p id="unique-artists"></p>
+                </div>
+                <div class="card">
+                    <h3>Unique Albums Involved</h3>
+                    <p id="unique-albums"></p>
+                </div>
+                <div class="card">
+                    <h3>Tracks to Delete (Lower Quality)</h3>
+                    <p id="tracks-to-delete"></p>
+                </div>
+            </div>
+            <div id="will-keep-chart" class="chart-container"></div>
+        </section>
+
+        <section id="quality-distribution" class="dashboard-section">
+            <h2>Duplicate Tracks by Quality (kbps)</h2>
+            <div id="quality-chart" class="chart-container"></div>
+        </section>
+
+        <section id="format-distribution" class="dashboard-section">
+            <h2>Duplicate Tracks by Format</h2>
+            <div id="format-chart" class="chart-container"></div>
+        </section>
+
+        <section id="year-distribution" class="dashboard-section">
+            <h2>Duplicate Tracks by Year</h2>
+            <div id="year-chart" class="chart-container"></div>
+        </section>
+
+        <section id="top-artists-duplicates" class="dashboard-section">
+            <h2>Top 10 Artists with Most Duplicates</h2>
+            <div id="artists-chart" class="chart-container"></div>
+        </section>
+
+        <section id="top-albums-duplicates" class="dashboard-section">
+            <h2>Top 10 Albums with Most Duplicates</h2>
+            <div id="albums-chart" class="chart-container"></div>
+        </section>
+
+        <section id="duplicate-groups-list" class="dashboard-section">
+            <h2>Explore Duplicate Groups</h2>
+            <div class="group-controls">
+                <input type="text" id="group-search" placeholder="Search Group ID, Artist, or Album...">
+                <button id="prev-page">Previous</button>
+                <span id="page-info"></span>
+                <button id="next-page">Next</button>
+            </div>
+            <div id="groups-container" class="table-container">
+                <table id="groups-table">
+                    <thead>
+                        <tr>
+                            <th>Group ID</th>
+                            <th>Total Tracks</th>
+                            <th>Highest Quality Tracks</th>
+                            <th>Will Keep Tracks</th>
+                            <th>Artists</th>
+                            <th>Albums</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Group IDs will be loaded here -->
+                    </tbody>
+                </table>
+            </div>
+            <div id="group-detail-modal" class="modal">
+                <div class="modal-content">
+                    <span class="close-button">&times;</span>
+                    <h3>Details for Group ID: <span id="modal-group-id"></span></h3>
+                    <div id="modal-group-tracks">
+                        <!-- Track details for the selected group will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
