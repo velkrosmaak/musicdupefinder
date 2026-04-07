@@ -58,6 +58,12 @@ def get_audio_metadata(file_path):
         if year and str(year).strip():
              year = str(year).split('-')[0].strip()[:4]
         
+        # Extract Compilation flag
+        comp_raw = audio.get('TCMP', audio.get('compilation', audio.get('cpil', [None])))
+        if isinstance(comp_raw, list):
+            comp_raw = comp_raw[0]
+        is_compilation = str(comp_raw).lower() in ('1', 'true', 'yes')
+
         # Format (extension)
         fmt = os.path.splitext(file_path)[1].lower().lstrip('.')
         
@@ -76,7 +82,8 @@ def get_audio_metadata(file_path):
             'bitrate': bitrate,
             'path': file_path,
             'scan_time': elapsed,
-            'size': file_size
+            'size': file_size,
+            'compilation': is_compilation
         }
     except Exception:
         return None
@@ -227,7 +234,7 @@ def compute_duplicate_stats(duplicates):
 
 
 def write_csv_log(duplicates, output_path):
-    header = ['Group ID', 'Quality (kbps)', 'Highest Quality', 'Will Keep', 'Format', 'Artist', 'Title', 'Album', 'Year', 'Path']
+    header = ['Group ID', 'Quality (kbps)', 'Highest Quality', 'Will Keep', 'Compilation', 'Format', 'Artist', 'Title', 'Album', 'Year', 'Path']
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -251,6 +258,7 @@ def write_csv_log(duplicates, output_path):
                     bitrate,
                     is_highest,
                     will_keep,
+                    track.get('compilation', False),
                     track['format'],
                     track['artist'],
                     track['title'],
@@ -285,7 +293,13 @@ def determine_actions(duplicates):
         directory_scores[os.path.dirname(best_track['path'])] += 1
         
         for track in group:
-            if track['path'] != best_track['path']:
+            if track['path'] == best_track['path']:
+                continue
+            
+            if track.get('compilation'):
+                keeps.add(track['path'])
+                directory_scores[os.path.dirname(track['path'])] += 1
+            else:
                 removes.add(track['path'])
                 
     return keeps, removes
@@ -307,7 +321,8 @@ def report_duplicates(duplicates, stats=None, log_csv=None, do_deletes=False):
             status = color("[KEEP]", COLOR_GREEN) if f['path'] in keeps else color("[DELETE]", COLOR_RED)
             bitrate_kbps = f['bitrate'] // 1000 if f['bitrate'] else "Unknown"
             size_str = format_size(os.path.getsize(f['path']))
-            print(f"  {status} [{f['format'].upper()}] {bitrate_kbps}kbps, {size_str}: {f['path']}")
+            comp_suffix = color(" (Compilation)", COLOR_YELLOW) if f.get('compilation') else ""
+            print(f"  {status} [{f['format'].upper()}] {bitrate_kbps}kbps, {size_str}: {f['path']}{comp_suffix}")
     
     if len(duplicates) > limit:
         print(f"\n... and {len(duplicates) - limit} more groups.")
